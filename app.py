@@ -1,59 +1,37 @@
-import base64
 import gradio as gr
-import openai
-from pydub import AudioSegment
+import numpy as np
 import io
+from pydub import AudioSegment
 import tempfile
-import speech_recognition as sr
 import os
+import base64
+import openai
+from dataclasses import dataclass, field
+from threading import Lock
+
+# Lepton API setup
+client = openai.OpenAI(
+    base_url="https://llama3-1-8b.lepton.run/api/v1/",
+    api_key=os.environ.get('LEPTON_API_TOKEN')
+)
+
+@dataclass
+class AppState:
+    conversation: list = field(default_factory=list)
+    lock: Lock = field(default_factory=Lock)
 
 def transcribe_audio(audio):
-    try:
-        # Convert the audio to wav format
-        audio = AudioSegment.from_file(audio)
-        audio = audio.set_frame_rate(16000).set_channels(1)
+    # This is a placeholder function. In a real-world scenario, you'd use a
+    # speech-to-text service here. For now, we'll just return a dummy transcript.
+    return "This is a dummy transcript. Please implement actual speech-to-text functionality."
+
+def generate_response_and_audio(message, state):
+    with state.lock:
+        state.conversation.append({"role": "user", "content": message})
         
-        # Save as wav file
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_audio:
-            audio.export(temp_audio.name, format="wav")
-            temp_audio_path = temp_audio.name
-
-        # Perform speech recognition
-        recognizer = sr.Recognizer()
-        with sr.AudioFile(temp_audio_path) as source:
-            audio_data = recognizer.record(source)
-            text = recognizer.recognize_google(audio_data)
-
-        return text
-    except Exception as e:
-        return f"Error in transcription: {str(e)}"
-    finally:
-        # Clean up the temporary file
-        if 'temp_audio_path' in locals():
-            os.unlink(temp_audio_path)
-
-def process_audio(audio, api_token):
-    if not api_token:
-        return "Please provide an API token.", None
-
-    # Initialize the OpenAI client with the user-provided token
-    client = openai.OpenAI(
-        base_url="https://llama3-2-3b.lepton.run/api/v1/",
-        api_key=api_token
-    )
-
-    # Transcribe the input audio
-    transcription = transcribe_audio(audio)
-    if transcription.startswith("Error in transcription:"):
-        return transcription, None
-
-    try:
-        # Process the transcription with the API
         completion = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "user", "content": transcription},
-            ],
+            model="llama3-1-8b",
+            messages=state.conversation,
             max_tokens=128,
             stream=True,
             extra_body={
@@ -62,46 +40,66 @@ def process_audio(audio, api_token):
             }
         )
 
-        response_text = ""
-        audios = []
+        full_response = ""
+        audio_chunks = []
 
         for chunk in completion:
             if not chunk.choices:
                 continue
+            
             content = chunk.choices[0].delta.content
             audio = getattr(chunk.choices[0], 'audio', [])
+            
             if content:
-                response_text += content
+                full_response += content
+                yield full_response, None, state
+            
             if audio:
-                audios.extend(audio)
+                audio_chunks.extend(audio)
+                audio_data = b''.join([base64.b64decode(a) for a in audio_chunks])
+                yield full_response, audio_data, state
 
-        # Combine audio chunks and save as MP3
-        audio_data = b''.join([base64.b64decode(audio) for audio in audios])
-        
-        # Save the audio to a temporary file
-        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as temp_audio:
-            temp_audio.write(audio_data)
-            temp_audio_path = temp_audio.name
+        state.conversation.append({"role": "assistant", "content": full_response})
 
-        return response_text, temp_audio_path
+def chat(message, state):
+    if not message:
+        return "", None, state
 
-    except Exception as e:
-        return f"An error occurred during API processing: {str(e)}", None
+    return generate_response_and_audio(message, state)
 
-# Create the Gradio interface
-iface = gr.Interface(
-    fn=process_audio,
-    inputs=[
-        gr.Audio(type="filepath", label="Input Audio"),
-        gr.Textbox(label="API Token", type="password")
-    ],
-    outputs=[
-        gr.Textbox(label="Response Text"),
-        gr.Audio(label="Response Audio")
-    ],
-    title="Audio-to-Audio Demo",
-    description="Upload an audio file and provide your API token to get a response in both text and audio format."
-)
+def process_audio(audio, state):
+    if audio is None:
+        return "", state
+    
+    # Convert numpy array to wav
+    audio_segment = AudioSegment(
+        audio[1].tobytes(),
+        frame_rate=audio[0],
+        sample_width=audio[1].dtype.itemsize,
+        channels=1 if len(audio[1].shape) == 1 else audio[1].shape[1]
+    )
+    
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_audio:
+        audio_segment.export(temp_audio.name, format="wav")
+        transcript = transcribe_audio(temp_audio.name)
+    
+    os.unlink(temp_audio.name)
+    
+    return transcript, state
 
-# Launch the interface
-iface.launch()
+with gr.Blocks() as demo:
+    state = gr.State(AppState())
+    
+    with gr.Row():
+        with gr.Column(scale=1):
+            audio_input = gr.Audio(source="microphone", type="numpy")
+        with gr.Column(scale=2):
+            chatbot = gr.Chatbot()
+            text_input = gr.Textbox(show_label=False, placeholder="Type your message here...")
+        with gr.Column(scale=1):
+            audio_output = gr.Audio(label="Generated Audio")
+    
+    audio_input.change(process_audio, [audio_input, state], [text_input, state])
+    text_input.submit(chat, [text_input, state], [chatbot, audio_output, state])
+    
+demo.launch()
