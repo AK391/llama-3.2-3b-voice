@@ -5,27 +5,32 @@ from pydub import AudioSegment
 import io
 import tempfile
 import speech_recognition as sr
+import os
 
 def transcribe_audio(audio):
-    # Convert the audio to wav format
-    audio = AudioSegment.from_file(audio)
-    audio = audio.set_frame_rate(16000).set_channels(1)
-    
-    # Save as wav file
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_audio:
-        audio.export(temp_audio.name, format="wav")
-        temp_audio_path = temp_audio.name
+    try:
+        # Convert the audio to wav format
+        audio = AudioSegment.from_file(audio)
+        audio = audio.set_frame_rate(16000).set_channels(1)
+        
+        # Save as wav file
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_audio:
+            audio.export(temp_audio.name, format="wav")
+            temp_audio_path = temp_audio.name
 
-    # Perform speech recognition
-    recognizer = sr.Recognizer()
-    with sr.AudioFile(temp_audio_path) as source:
-        audio_data = recognizer.record(source)
-        text = recognizer.recognize_google(audio_data)
+        # Perform speech recognition
+        recognizer = sr.Recognizer()
+        with sr.AudioFile(temp_audio_path) as source:
+            audio_data = recognizer.record(source)
+            text = recognizer.recognize_google(audio_data)
 
-    # Clean up the temporary file
-    os.unlink(temp_audio_path)
-
-    return text
+        return text
+    except Exception as e:
+        return f"Error in transcription: {str(e)}"
+    finally:
+        # Clean up the temporary file
+        if 'temp_audio_path' in locals():
+            os.unlink(temp_audio_path)
 
 def process_audio(audio, api_token):
     if not api_token:
@@ -39,6 +44,8 @@ def process_audio(audio, api_token):
 
     # Transcribe the input audio
     transcription = transcribe_audio(audio)
+    if transcription.startswith("Error in transcription:"):
+        return transcription, None
 
     try:
         # Process the transcription with the API
@@ -79,7 +86,7 @@ def process_audio(audio, api_token):
         return response_text, temp_audio_path
 
     except Exception as e:
-        return f"An error occurred: {str(e)}", None
+        return f"An error occurred during API processing: {str(e)}", None
 
 # Create the Gradio interface
 iface = gr.Interface(
