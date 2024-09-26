@@ -1,3 +1,3 @@
-openai 
-pydub 
-SpeechRecognition
+numpy
+pydub
+openai
