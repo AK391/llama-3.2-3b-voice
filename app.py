@@ -6,6 +6,7 @@ import tempfile
 import os
 import base64
 import openai
+import time
 from dataclasses import dataclass, field
 from threading import Lock
 
@@ -21,10 +22,47 @@ def create_client(api_key):
         api_key=api_key
     )
 
-def transcribe_audio(audio):
-    # This is a placeholder function. In a real-world scenario, you'd use a
-    # speech-to-text service here. For now, we'll just return a dummy transcript.
-    return "This is a dummy transcript. Please implement actual speech-to-text functionality."
+def process_audio_file(audio_file, state):
+    if state.client is None:
+        raise gr.Error("Please enter a valid API key first.")
+
+    format_ = "opus"
+    bitrate = 16
+
+    with open(audio_file.name, "rb") as f:
+        audio_bytes = f.read()
+    audio_data = base64.b64encode(audio_bytes).decode()
+
+    try:
+        stream = state.client.chat.completions.create(
+            extra_body={
+                "require_audio": True,
+                "tts_preset_id": "jessica",
+                "tts_audio_format": format_,
+                "tts_audio_bitrate": bitrate
+            },
+            model="llama3.1-8b",
+            messages=[{"role": "user", "content": [{"type": "audio", "data": audio_data}]}],
+            temperature=0.5,
+            max_tokens=128,
+            stream=True,
+        )
+
+        transcript = ""
+        audio_chunks = []
+
+        for chunk in stream:
+            if chunk.choices[0].delta.content:
+                transcript += chunk.choices[0].delta.content
+            if hasattr(chunk.choices[0], 'audio') and chunk.choices[0].audio:
+                audio_chunks.extend(chunk.choices[0].audio)
+
+        audio_data = b''.join([base64.b64decode(a) for a in audio_chunks])
+        
+        return transcript, audio_data, state
+
+    except Exception as e:
+        raise gr.Error(f"Error processing audio: {str(e)}")
 
 def generate_response_and_audio(message, state):
     if state.client is None:
@@ -74,26 +112,6 @@ def chat(message, state):
 
     return generate_response_and_audio(message, state)
 
-def process_audio(audio, state):
-    if audio is None:
-        return "", state
-    
-    # Convert numpy array to wav
-    audio_segment = AudioSegment(
-        audio[1].tobytes(),
-        frame_rate=audio[0],
-        sample_width=audio[1].dtype.itemsize,
-        channels=1 if len(audio[1].shape) == 1 else audio[1].shape[1]
-    )
-    
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_audio:
-        audio_segment.export(temp_audio.name, format="wav")
-        transcript = transcribe_audio(temp_audio.name)
-    
-    os.unlink(temp_audio.name)
-    
-    return transcript, state
-
 def set_api_key(api_key, state):
     if not api_key:
         raise gr.Error("Please enter a valid API key.")
@@ -111,7 +129,7 @@ with gr.Blocks() as demo:
     
     with gr.Row():
         with gr.Column(scale=1):
-            audio_input = gr.Audio(source="microphone", type="numpy")
+            audio_file_input = gr.File(label="Upload Audio File")
         with gr.Column(scale=2):
             chatbot = gr.Chatbot()
             text_input = gr.Textbox(show_label=False, placeholder="Type your message here...")
@@ -119,7 +137,11 @@ with gr.Blocks() as demo:
             audio_output = gr.Audio(label="Generated Audio")
     
     set_key_button.click(set_api_key, inputs=[api_key_input, state], outputs=[api_key_status, state])
-    audio_input.change(process_audio, inputs=[audio_input, state], outputs=[text_input, state])
+    audio_file_input.change(
+        process_audio_file,
+        inputs=[audio_file_input, state],
+        outputs=[text_input, audio_output, state]
+    )
     text_input.submit(chat, inputs=[text_input, state], outputs=[chatbot, audio_output, state])
     
 demo.launch()
