@@ -1,3 +1,4 @@
+https://gradio-builds.s3.amazonaws.com/cffe9a7ab7f71e76d7214dc57c6278ffaf5bcdf9/gradio-5.0.0b1-py3-none-any.whl
 numpy
 pydub
 openai
