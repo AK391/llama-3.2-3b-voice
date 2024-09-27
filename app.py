@@ -7,6 +7,8 @@ import openai
 import time
 from dataclasses import dataclass, field
 from threading import Lock
+import base64
+
 
 @dataclass
 class AppState:
