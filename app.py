@@ -13,8 +13,10 @@ from threading import Lock
 @dataclass
 class AppState:
     conversation: list = field(default_factory=list)
-    lock: Lock = field(default_factory=Lock)
     client: openai.OpenAI = None
+
+# Global lock for thread safety
+state_lock = Lock()
 
 def create_client(api_key):
     return openai.OpenAI(
@@ -68,7 +70,7 @@ def generate_response_and_audio(message, state):
     if state.client is None:
         raise gr.Error("Please enter a valid API key first.")
 
-    with state.lock:
+    with state_lock:
         state.conversation.append({"role": "user", "content": message})
         
         try:
