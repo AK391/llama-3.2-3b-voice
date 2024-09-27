@@ -14,11 +14,11 @@ from threading import Lock
 class AppState:
     stream: np.ndarray | None = None
     sampling_rate: int = 0
-    pause_detected: bool = False
-    started_talking: bool = False
-    stopped: bool = False
+    pause_start: float | None = None
+    last_speech: float = 0
     conversation: list = field(default_factory=list)
     client: openai.OpenAI = None
+    output_format: str = "mp3"
 
 # Global lock for thread safety
 state_lock = Lock()
@@ -33,21 +33,30 @@ def process_audio(audio: tuple, state: AppState):
     if state.stream is None:
         state.stream = audio[1]
         state.sampling_rate = audio[0]
+        state.last_speech = time.time()
     else:
         state.stream = np.concatenate((state.stream, audio[1]))
 
-    # Simple pause detection (you might want to implement a more sophisticated method)
-    if len(state.stream) > state.sampling_rate * 0.5:  # 0.5 second of silence
-        state.pause_detected = True
+    # Improved pause detection
+    current_time = time.time()
+    if np.max(np.abs(audio[1])) > 0.1:  # Adjust this threshold as needed
+        state.last_speech = current_time
+        state.pause_start = None
+    elif state.pause_start is None:
+        state.pause_start = current_time
+
+    # Check if pause is long enough to stop recording
+    if state.pause_start and (current_time - state.pause_start > 2.0):  # 2 seconds of silence
         return gr.Audio(recording=False), state
+
     return None, state
 
 def generate_response_and_audio(audio_bytes: bytes, state: AppState):
     if state.client is None:
         raise gr.Error("Please enter a valid API key first.")
 
-    format_ = "opus"
-    bitrate = 16
+    format_ = state.output_format
+    bitrate = 128 if format_ == "mp3" else 32  # Higher bitrate for MP3, lower for OPUS
     audio_data = base64.b64encode(audio_bytes).decode()
     
     try:
@@ -60,8 +69,8 @@ def generate_response_and_audio(audio_bytes: bytes, state: AppState):
             },
             model="llama3.1-8b",
             messages=[{"role": "user", "content": [{"type": "audio", "data": audio_data}]}],
-            temperature=0.5,
-            max_tokens=128,
+            temperature=0.7,
+            max_tokens=256,
             stream=True,
         )
 
@@ -88,8 +97,8 @@ def generate_response_and_audio(audio_bytes: bytes, state: AppState):
         raise gr.Error(f"Error during audio streaming: {e}")
 
 def response(state: AppState):
-    if not state.pause_detected:
-        return None, None, AppState()
+    if state.stream is None or len(state.stream) == 0:
+        return None, None, state
     
     audio_buffer = io.BytesIO()
     segment = AudioSegment(
@@ -113,6 +122,11 @@ def response(state: AppState):
     # Update the chatbot with the final conversation
     chatbot_output = state.conversation[-2:]  # Get the last two messages (user input and AI response)
     
+    # Reset the audio stream for the next interaction
+    state.stream = None
+    state.pause_start = None
+    state.last_speech = 0
+    
     return chatbot_output, final_audio, state
 
 def set_api_key(api_key, state):
@@ -121,9 +135,9 @@ def set_api_key(api_key, state):
     state.client = create_client(api_key)
     return "API key set successfully!", state
 
-def start_recording_user(state: AppState):
-    if not state.stopped:
-        return gr.Audio(recording=True)
+def update_format(format, state):
+    state.output_format = format
+    return state
 
 with gr.Blocks() as demo:
     with gr.Row():
@@ -131,6 +145,9 @@ with gr.Blocks() as demo:
         set_key_button = gr.Button("Set API Key")
     
     api_key_status = gr.Textbox(label="API Key Status", interactive=False)
+    
+    with gr.Row():
+        format_dropdown = gr.Dropdown(choices=["mp3", "opus"], value="mp3", label="Output Audio Format")
     
     with gr.Row():
         with gr.Column():
@@ -142,33 +159,20 @@ with gr.Blocks() as demo:
     state = gr.State(AppState())
 
     set_key_button.click(set_api_key, inputs=[api_key_input, state], outputs=[api_key_status, state])
+    format_dropdown.change(update_format, inputs=[format_dropdown, state], outputs=[state])
 
     stream = input_audio.stream(
         process_audio,
         [input_audio, state],
         [input_audio, state],
-        stream_every=0.50,
-        time_limit=30,
+        stream_every=0.25,  # Reduced to make it more responsive
+        time_limit=60,  # Increased to allow for longer messages
     )
     
     respond = input_audio.stop_recording(
         response,
         [state],
         [chatbot, output_audio, state]
-    )
-
-    restart = output_audio.stop(
-        start_recording_user,
-        [state],
-        [input_audio]
-    )
-    
-    cancel = gr.Button("Stop Conversation", variant="stop")
-    cancel.click(
-        lambda: (AppState(stopped=True), gr.Audio(recording=False)),
-        None,
-        [state, input_audio],
-        cancels=[respond, restart]
     )
 
 demo.launch()
