@@ -131,7 +131,7 @@ with gr.Blocks() as demo:
     
     with gr.Row():
         with gr.Column(scale=1):
-            audio_file_input = gr.File(label="Upload Audio File")
+            audio_file_input = gr.Audio(sources="microphone")
         with gr.Column(scale=2):
             chatbot = gr.Chatbot()
             text_input = gr.Textbox(show_label=False, placeholder="Type your message here...")
