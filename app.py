@@ -100,7 +100,20 @@ def response(state: AppState):
     )
     segment.export(audio_buffer, format="wav")
 
-    return generate_response_and_audio(audio_buffer.getvalue(), state)
+    generator = generate_response_and_audio(audio_buffer.getvalue(), state)
+    
+    # Process the generator to get the final results
+    final_text = ""
+    final_audio = None
+    for text, audio, updated_state in generator:
+        final_text = text if text else final_text
+        final_audio = audio if audio else final_audio
+        state = updated_state
+
+    # Update the chatbot with the final conversation
+    chatbot_output = state.conversation[-2:]  # Get the last two messages (user input and AI response)
+    
+    return chatbot_output, final_audio, state
 
 def set_api_key(api_key, state):
     if not api_key:
