@@ -84,14 +84,15 @@ def generate_response_and_audio(audio_bytes: bytes, state: AppState):
             audio = getattr(chunk.choices[0], 'audio', [])
             if content:
                 full_response += content
-                yield full_response, None, state
             if audio:
                 audios.extend(audio)
-                audio_data = b''.join([base64.b64decode(a) for a in audios])
-                yield full_response, audio_data, state
+
+        final_audio = b''.join([base64.b64decode(a) for a in audios])
 
         state.conversation.append({"role": "user", "content": "Audio input"})
         state.conversation.append({"role": "assistant", "content": full_response})
+
+        return full_response, final_audio, state
 
     except Exception as e:
         raise gr.Error(f"Error during audio streaming: {e}")
@@ -109,25 +110,17 @@ def response(state: AppState):
     )
     segment.export(audio_buffer, format="wav")
 
-    generator = generate_response_and_audio(audio_buffer.getvalue(), state)
-    
-    # Process the generator to get the final results
-    final_text = ""
-    final_audio = None
-    for text, audio, updated_state in generator:
-        final_text = text if text else final_text
-        final_audio = audio if audio else final_audio
-        state = updated_state
+    full_response, final_audio, updated_state = generate_response_and_audio(audio_buffer.getvalue(), state)
 
     # Update the chatbot with the final conversation
-    chatbot_output = state.conversation[-2:]  # Get the last two messages (user input and AI response)
+    chatbot_output = updated_state.conversation[-2:]  # Get the last two messages (user input and AI response)
     
     # Reset the audio stream for the next interaction
-    state.stream = None
-    state.pause_start = None
-    state.last_speech = 0
+    updated_state.stream = None
+    updated_state.pause_start = None
+    updated_state.last_speech = 0
     
-    return chatbot_output, final_audio, state
+    return chatbot_output, final_audio, updated_state
 
 def set_api_key(api_key, state):
     if not api_key:
@@ -154,7 +147,7 @@ with gr.Blocks() as demo:
             input_audio = gr.Audio(label="Input Audio", sources="microphone", type="numpy")
         with gr.Column():
             chatbot = gr.Chatbot(label="Conversation", type="messages")
-            output_audio = gr.Audio(label="Output Audio", streaming=True, autoplay=True)
+            output_audio = gr.Audio(label="Output Audio", autoplay=True)
     
     state = gr.State(AppState())
 
